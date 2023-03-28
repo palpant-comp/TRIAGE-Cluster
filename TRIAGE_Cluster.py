@@ -1,29 +1,16 @@
-import pandas as pd 
-import numpy as np 
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns 
+import numpy as np
+import matplotlib
 from scipy import stats
 from sklearn.cluster import DBSCAN
+from scipy.io import mmread
+import sys
+from pathlib import Path
 
 np.random.seed(0)
-
-# PART 1: Assign TRIAGE gene and its RTS score to each gene, which will be used later to calcuate repressive tendency density, used in the contour clustering. 
-def getv1gene(exprdf, cellmeta, fdir = './', cellcolname = 'cell_barcode'):
-	# load in TRIAGE version 1 rts
-	rtslist = pd.read_table(fdir + 'TRIAGE1/repressive_hg19_cont_prop.txt', header = None, names = ['geneName', 'RTS'])
-	# order rtslist by rts and only keep genes in expression matrix
-	v1_new = rtslist[rtslist['geneName'].isin(exprdf.index)].sort_values('RTS', ascending = False)
-	v1_new.index = range(0, len(v1_new)) # reset indices in v1_new
-	# order expression matrix genes by rts
-	exprdford = exprdf = exprdf.loc[v1_new['geneName'].values]
-	# asisgn highest RTS score gene to each cell by getting id of first non-zero row in each col
-	genelabels = exprdford.ne(0).idxmax()
-	# put into dataframe and merge with existing metadata
-	genelabelsdf = pd.DataFrame(list(zip(genelabels.index, genelabels.values)), columns = [cellcolname, 'v1gene'])
-	outmeta = genelabelsdf.merge(v1_new.rename(columns = {'geneName':'v1gene'}), how = 'left', on = 'v1gene')
-	outmeta = outmeta.merge(cellmeta, how = 'outer', on = cellcolname)
-	return(outmeta)
-
-################################
-# PART 2: Take output from getv1gene and a given density calculation bandwidth, calculate repressive tendency density across umap space and find 'peak' regions of high rt density, i.e., highly defined cell types
 
 # function called in getPeaks
 # adds clusters that contain other clusters into the blacklist
@@ -68,11 +55,12 @@ def getPeaks(clusterstrings):
 
 # the function that runs the contour clustering itself, have to choose bandwith prior to running it, usually do this by making a few kde pots of different bandwith (bw) values 
 # df is pandas DataFrame with cell barcodes, UMAP coordinate columns, any other metadata, and the RTS values for the TRIAGE gene chosen for each cell
-def runcclust(bandwidth, df):
+def runcclust(bandwidth, df, eps, cellname, dp): #eps is the parameter used in DBSCAN, default is 0.5 in DBSCAN.
 	print('calculating density landscape...')
-	kde = stats.gaussian_kde(df.loc[:, ["UMAP1", "UMAP2"]].T, weights=df["RTS"])
+	dim1, dim2 = dp+str(1), dp+str(2)
+	kde = stats.gaussian_kde(df.loc[:, [dim1, dim2]].T, weights=df["RTS"])
 	kde.set_bandwidth(kde.factor * bandwidth)
-	df["density"] = kde(df.loc[:, ["UMAP1", "UMAP2"]].T)
+	df["density"] = kde(df.loc[:, [dim1, dim2]].T)
 	# cut density into 10 contours
 	dens_sorted = np.sort(df['density'])
 	p = 1. * np.arange(len(df[['density']])) / (len(df[['density']]) - 1)
@@ -80,14 +68,12 @@ def runcclust(bandwidth, df):
 	print('finding clusters on each contour level...')
 	df_new = df
 	for threshold in thresholds:
-		ctypes = df[df['density']>threshold[0]]
-		dbscans = DBSCAN(eps = 0.2).fit(ctypes.loc[:,['UMAP1', 'UMAP2']])
+		ctypes = df[df['density']>threshold[0]].copy()
+		dbscans = DBSCAN(eps).fit(ctypes.loc[:,[dim1, dim2]])
 		# print(np.asarray(np.unique(dbscans.labels_, return_counts=True)).T)
-		#sns.relplot(data=ctypes, x='UMAP1', y='UMAP2', hue=dbscans.labels_.astype(str), s=1, edgecolor=None, legend='full', facet_kws={'legend_out':True}); plt.suptitle(threshold[0]); plt.show()
+		#sns.relplot(data=ctypes, x=dim1, y=dim2, hue=dbscans.labels_.astype(str), s=1, edgecolor=None, legend='full', facet_kws={'legend_out':True}); plt.suptitle(threshold[0]); plt.show()
 		ctypes['cont_'+str(threshold[0])] = dbscans.labels_
-        # "cell" is the cell names column in metadata
-		df_new = pd.merge(df_new, ctypes[['cell', 'cont_'+str(threshold[0])]], how='left', on='cell')
-	# getPeaks function is from misc/contourclust_getpeakfns.py 
+		df_new = pd.merge(df_new, ctypes[[cellname, 'cont_'+str(threshold[0])]], how='left', on=cellname)
 	print('getting peaks..')
 	cccolidx = [col for col in df_new.columns if col.startswith('cont_')] 
 	cccols = df_new[cccolidx[1:]] 
@@ -95,73 +81,54 @@ def runcclust(bandwidth, df):
 	peaks = getPeaks(strcc)
 	df_new['peaks'] = [s if s in peaks else np.nan for s in strcc]
 	df_new['clust'] = [clust if clust != -1 else np.nan for clust in pd.factorize(df_new['peaks'])[0]]
-	firstcellsidx = [list(df_new['clust']).index(clust) for clust in df_new['clust'].unique()[1:]]
+	firstcellsidx = [list(df_new['clust']).index(clust) for clust in df_new['clust'].unique() if pd.notnull(clust)]
 	firstcells = [df_new['clust'][i] if i in firstcellsidx else np.nan for i in range(0, len(df_new))]
 	df_new['firstcells'] = firstcells
 	# return metadata table
 	return(df_new)
 
 
+def peakplot(df, dp):
+	dim1, dim2 = dp+str(1), dp+str(2)
+    colours = ['#e5e5e5'] + sns.color_palette('husl', (len(set(df['peaks'])))-1).as_hex()
+    df['clust_'] = pd.Categorical(df['clust'].astype(str), 
+                                  categories=['nan'] + df['clust'].dropna().astype(str).unique().tolist(),
+                                  ordered=True)
+    sns.relplot(data = df, x = dim1, y = dim2, hue = df['clust_'], s = 1, edgecolor = None, 
+            palette = colours,legend = 'full', facet_kws = {'legend_out':True}, rasterized=True)
+    for i in range(0, df.shape[0]):
+        if df['firstcells'][i].astype('str') != 'nan':
+            plt.text(x = df[dim1][i]+0.3, y = df[dim2][i]+0.3, s = df.firstcells[i].astype('int'), size = 5)
 
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns 
-import numpy as np
-import matplotlib
-from scipy import stats
-from sklearn.cluster import DBSCAN
-from scipy.io import mmread
-import sys
-from pathlib import Path
 
 
+
+
+########example############
 path = Path("/home/uqysun19/90days/manuscript_TRIAGEclustering/bottom2top_RTS/Gottgens_data")
+mtx = pd.read_csv(path / "Gottgens_originalExpr_TRIAGEclustering/Gottgens_originalExpr_metadata_with_v1gene_RTS_density.csv", index_col=0)
 
+# # make initial contour plot based on RTS values, choose bandwidth and save #############
+# c = np.linspace(0,1,10)
+# colors = plt.get_cmap('Spectral', 10)(c)
+# cmap = matplotlib.colors.ListedColormap(colors[::-1])
+# a4_dims = (11.7, 8.27)
 
-df = pd.read_csv(path / "Gottgens_originalExpr_TRIAGEclustering/Gottgens_originalExpr_metadata_with_v1gene_RTS_density.csv", index_col=0)
-
-# make initial contour plot based on RTS values, choose bandwidth and save #############
-c = np.linspace(0,1,10)
-colors = plt.get_cmap('Spectral', 10)(c)
-cmap = matplotlib.colors.ListedColormap(colors[::-1])
-a4_dims = (11.7, 8.27)
-
-bw = (float(sys.argv[1]) / 10)
-fig, ax = plt.subplots(figsize=a4_dims)
-sns.kdeplot(data=df, x="UMAP1", y="UMAP2", weights="RTS", bw_adjust=bw, levels=10, cmap=cmap, fill = True, cbar=True, ax= ax)
-sns.kdeplot(data=df, x="UMAP1", y="UMAP2", weights="RTS", bw_adjust=bw, levels=10, color='black', ax=ax, **{"linestyles":"solid", "linewidths":0.1})
-ax.set_title('bw:'+ str(bw))
+# bw = (float(sys.argv[1]) / 10)
+# fig, ax = plt.subplots(figsize=a4_dims)
+# sns.kdeplot(data=df, x="UMAP1", y="UMAP2", weights="RTS", bw_adjust=bw, levels=10, cmap=cmap, fill = True, cbar=True, ax= ax)
+# sns.kdeplot(data=df, x="UMAP1", y="UMAP2", weights="RTS", bw_adjust=bw, levels=10, color='black', ax=ax, **{"linestyles":"solid", "linewidths":0.1})
+# ax.set_title('bw:'+ str(bw))
 # fig.show()
 
-fig.savefig(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_originalExpr_contour_bw{}.pdf'.format(str(bw)), dpi = 300)
+# # fig.savefig(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_originalExpr_contour_bw{}.pdf'.format(str(bw)), dpi = 300)
 
 # run contour clustering ##############################
 # takes bandwidth we chose and runs clustering on each of the 10 levels and retrieves the regions where local RTS score is at a peak
-df_new = runcclust(bw, df)
+df_new = runcclust(bandwidth = 0.3, df = mtx, eps = 0.2, cellname = "cell_name", dp = "UMAP_")
 
-# show plot of cclustering output and save ##############################
-colours = ['#e5e5e5'] + sns.color_palette('husl', (len(set(df_new['peaks'])))-1).as_hex()
+peakplot(df_new, "UMAP_")
 
-# umap of peaks without label
-a = sns.relplot(data = df_new, x = 'UMAP1', y = 'UMAP2', hue = df_new['clust'].astype('str'), s = 1, 
-                edgecolor = None, palette = colours,legend = 'full', 
-                facet_kws = {'legend_out':True}, rasterized=True)
-a.savefig(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_originalExpr_bw{}_nolabelUMAP.pdf'.format(str(bw)), dpi = 300)
-
-# umap of peaks with label
-sns.relplot(data = df_new, x = 'UMAP1', y = 'UMAP2', hue = df_new['clust'].astype('str'), 
-	s = 1, edgecolor = None, palette = colours,legend = 'full', facet_kws = {'legend_out':True}, rasterized=True)
-for i in range(0, df_new.shape[0]):
-	if df_new['firstcells'][i].astype('str') != 'nan':
-		plt.text(x = df_new.UMAP1[i]+0.3, y = df_new.UMAP2[i]+0.3, s = df_new.firstcells[i].astype('int'), size = 5)
-# plt.show()
-
-plt.rcParams['pdf.fonttype'] = 42
-plt.savefig(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_originalExpr_bw{}_labelledUMAP.pdf'.format(str(bw)), dpi = 300)
-
-# save ouptut
-df_new.to_csv(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_originalExpr_bw{}_metadata.csv'.format(str(bw)))
 
 # #get metadata and matrix with only peak cells
 # df_sub = df_new[df_new['clust'].notna()]
@@ -170,39 +137,4 @@ df_new.to_csv(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_o
 # mtx = pd.read_csv(path / "Gottgens_original_logged_matrix.csv", index_col=0)
 # mtx_sub = mtx[mtx.columns.intersection(df_sub['cell'])]
 # mtx_sub.to_csv(path / 'Gottgens_originalExpr_TRIAGEclustering/multi_bw/Gottgens_originalExpr_bw{}_submtx.csv'.format(str(bw)))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
