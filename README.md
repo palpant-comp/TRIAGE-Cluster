@@ -1,4 +1,7 @@
 # TRIAGE-Cluster
+
+![GitHub release (by tag)](https://img.shields.io/github/downloads/palpant-comp/TRIAGE-Cluster/v1.0.0/total)
+
 TRIAGE-Cluster is designed to analyse single-cell data to distinguish cell identity using epigenetic information as biological anchor.
 
 KEY FILES:
