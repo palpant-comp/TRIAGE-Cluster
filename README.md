@@ -1,7 +1,5 @@
 # TRIAGE-Cluster
 
-## For downloading, please refer to [![DOI](https://zenodo.org/badge/544896046.svg)](https://zenodo.org/doi/10.5281/zenodo.7816426)
-
 TRIAGE-Cluster is designed to analyse single-cell data to distinguish cell identity using epigenetic information as biological anchor.
 
 KEY FILES:
