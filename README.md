@@ -15,3 +15,8 @@ CODE DESCRIPTION:
 1. Preprocessing_and_TRIAGE_transformation.R - Pre-Processing, Normalisation and transform expression matrix to discordance matrix
 2. RTS_assign.R - Identify the RTS priority gene with highest expression and corresponding RTS for each cell
 3. TRIAGE_Cluster.py - Peaks generation
+
+If you use TRIAGE-Cluster in your research, please cite our paper: 
+Sun, Y., Shim, W., et al. "Inferring cell diversity in single cell data using consortium-scale epigenetic data as a biological anchor for cell identity" *Nucleic Acids Research*, Volume 51, Issue 11, 23 June 2023, https://doi.org/10.1093/nar/gkad307.
+
+See also https://github.com/palpant-comp/TRIAGE_R_Package for the R package version of this method. 
